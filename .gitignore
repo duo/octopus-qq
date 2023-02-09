@@ -1,0 +1,9 @@
+.vscode
+
+.DS_Store
+
+vendor/
+
+configure.yaml
+device.json
+session.token
