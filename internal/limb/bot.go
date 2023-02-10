@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/message"
+	"github.com/antchfx/xmlquery"
 	"github.com/tidwall/gjson"
 
 	log "github.com/sirupsen/logrus"
@@ -690,7 +692,7 @@ func (b *Bot) processEvent(event *common.OctopusEvent, elems []message.IMessageE
 			}
 		case *message.ForwardElement:
 			// TODO:
-			event.Content = "[转发消息]"
+			summary = append(summary, b.convertForward(v))
 		case *message.AnimatedSticker:
 			summary = append(summary, "/"+v.Name)
 		case *message.MarketFaceElement:
@@ -714,6 +716,88 @@ func (b *Bot) processEvent(event *common.OctopusEvent, elems []message.IMessageE
 	}
 
 	b.pushFunc(event)
+}
+
+func (b *Bot) convertForward(elem *message.ForwardElement) string {
+	var summary []string
+
+	var handleForward func(nodes []*message.ForwardNode)
+	handleForward = func(nodes []*message.ForwardNode) {
+		summary = append(summary, "ForwardMessage:\n")
+
+		for _, node := range nodes {
+			name := node.SenderName
+			if len(name) == 0 {
+				name = strconv.FormatInt(node.SenderId, 10)
+			}
+
+			summary = append(summary, fmt.Sprintf("%s:\n", name))
+			for _, e := range node.Message {
+				switch v := e.(type) {
+				case *message.TextElement:
+					summary = append(summary, v.Content)
+				case *message.FaceElement:
+					summary = append(summary, common.ConvertFace(v.Name))
+				case *message.AtElement:
+					summary = append(summary, v.Display)
+				case *message.FriendImageElement:
+					summary = append(summary, "[图片]")
+				case *message.GroupImageElement:
+					summary = append(summary, "[图片]")
+				case *message.ForwardMessage:
+					handleForward(v.Nodes)
+				case *message.ServiceElement:
+					log.Infof("Service: %+v", v)
+					if v.SubType != "xml" {
+						continue
+					}
+					doc, err := xmlquery.Parse(strings.NewReader(v.Content))
+					if err != nil {
+						log.Warnln("Failed to parse ServiceElement:", err)
+						continue
+					}
+					resNode := xmlquery.FindOne(doc, "/msg/@m_resid")
+					if resNode != nil && len(resNode.InnerText()) != 0 {
+						msg := b.client.GetForwardMessage(resNode.InnerText())
+						if msg != nil {
+							handleForward(msg.Nodes)
+						}
+					} else {
+						briefNode := xmlquery.FindOne(doc, "/msg/@brief")
+						if briefNode != nil && len(briefNode.InnerText()) != 0 {
+							summary = append(summary, fmt.Sprintf("%s:\n", briefNode.InnerText()))
+						} else {
+							summary = append(summary, "Items:\n")
+						}
+						for _, title := range xmlquery.Find(doc, "/msg/item/title") {
+							summary = append(summary, title.InnerText()+"\n")
+						}
+					}
+				case *message.AnimatedSticker:
+					summary = append(summary, "/"+v.Name)
+				case *message.MarketFaceElement:
+					summary = append(summary, v.Name)
+				default:
+					summary = append(summary, fmt.Sprintf("[%v]", v.Type()))
+				}
+			}
+			summary = append(summary, "\n")
+		}
+	}
+
+	msg := b.client.GetForwardMessage(elem.ResId)
+	if msg != nil {
+		handleForward(msg.Nodes)
+	} else {
+		log.Info("Failed to get forward!")
+	}
+
+	text := strings.Join(summary, "")
+	if text == "" {
+		return "[转发消息]"
+	}
+
+	return text
 }
 
 func (b *Bot) generateEvent(id string, ts int64) *common.OctopusEvent {
