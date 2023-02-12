@@ -315,7 +315,7 @@ func (ls *LimbService) pushEvent(event *common.OctopusEvent) {
 	go func() {
 		ls.wsWriteLock.Lock()
 		defer ls.wsWriteLock.Unlock()
-		log.Debugf("Send message: %+v", msg)
+		log.Debugf("Push event: %+v", event)
 		_ = ws.SetWriteDeadline(time.Now().Add(ls.config.Service.SendTiemout))
 		err := ws.WriteJSON(msg)
 		if err != nil {

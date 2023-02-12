@@ -5,7 +5,6 @@ import (
 	"crypto/md5"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -249,6 +248,8 @@ func (b *Bot) sync() {
 
 // process events from master
 func (b *Bot) processOcotopusEvent(event *common.OctopusEvent) (*common.OctopusEvent, error) {
+	log.Debugf("Receive Octopus event: %+v", event)
+
 	target, err := common.Atoi(event.Chat.ID)
 	if err != nil {
 		return nil, err
@@ -728,7 +729,7 @@ func (b *Bot) convertForward(elem *message.ForwardElement) string {
 		for _, node := range nodes {
 			name := node.SenderName
 			if len(name) == 0 {
-				name = strconv.FormatInt(node.SenderId, 10)
+				name = common.Itoa(node.SenderId)
 			}
 
 			summary = append(summary, fmt.Sprintf("%s:\n", name))
