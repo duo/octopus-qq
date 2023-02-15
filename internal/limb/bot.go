@@ -3,6 +3,7 @@ package limb
 import (
 	"bytes"
 	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -618,7 +619,7 @@ func (b *Bot) processEvent(event *common.OctopusEvent, elems []message.IMessageE
 		case *message.ShortVideoElement:
 			url := b.client.GetShortVideoUrl(v.Uuid, v.Md5)
 			if bin, err := common.Download(url); err != nil {
-				log.Warnf("Download group video failed: %v", err)
+				log.Warnf("Download video failed: %v", err)
 				event.Content = "[视频下载失败]"
 			} else {
 				bin.Name = v.Name
@@ -692,8 +693,8 @@ func (b *Bot) processEvent(event *common.OctopusEvent, elems []message.IMessageE
 				}
 			}
 		case *message.ForwardElement:
-			// TODO:
-			summary = append(summary, b.convertForward(v))
+			event.Type = common.EventApp
+			event.Data = b.convertForward(event.ID, v)
 		case *message.AnimatedSticker:
 			summary = append(summary, "/"+v.Name)
 		case *message.MarketFaceElement:
@@ -719,12 +720,17 @@ func (b *Bot) processEvent(event *common.OctopusEvent, elems []message.IMessageE
 	b.pushFunc(event)
 }
 
-func (b *Bot) convertForward(elem *message.ForwardElement) string {
+func (b *Bot) convertForward(id string, elem *message.ForwardElement) *common.AppData {
 	var summary []string
+	var content []string
+	var blobs = map[string]*common.BlobData{}
 
-	var handleForward func(nodes []*message.ForwardNode)
-	handleForward = func(nodes []*message.ForwardNode) {
+	var handleForward func(level int, nodes []*message.ForwardNode)
+	handleForward = func(level int, nodes []*message.ForwardNode) {
 		summary = append(summary, "ForwardMessage:\n")
+		if level > 0 {
+			content = append(content, "<blockquote>")
+		}
 
 		for _, node := range nodes {
 			name := node.SenderName
@@ -733,22 +739,43 @@ func (b *Bot) convertForward(elem *message.ForwardElement) string {
 			}
 
 			summary = append(summary, fmt.Sprintf("%s:\n", name))
+			content = append(content, fmt.Sprintf("<strong>%s:</strong><p>", name))
 			for _, e := range node.Message {
 				switch v := e.(type) {
 				case *message.TextElement:
 					summary = append(summary, v.Content)
+					content = append(content, v.Content)
 				case *message.FaceElement:
 					summary = append(summary, common.ConvertFace(v.Name))
+					content = append(content, common.ConvertFace(v.Name))
 				case *message.AtElement:
 					summary = append(summary, v.Display)
+					content = append(content, v.Display)
 				case *message.FriendImageElement:
 					summary = append(summary, "[图片]")
+					if bin, err := common.Download(v.Url); err != nil {
+						log.Warnf("Download forward friend image failed: %v", err)
+						content = append(content, "[图片]")
+					} else {
+						md5 := hex.EncodeToString(v.Md5)
+						bin.Name = v.ImageId
+						blobs[md5] = bin
+						content = append(content, fmt.Sprintf("<img src=\"%s%s\">", common.REMOTE_PREFIX, md5))
+					}
 				case *message.GroupImageElement:
 					summary = append(summary, "[图片]")
+					if bin, err := common.Download(v.Url); err != nil {
+						log.Warnf("Download forward image failed: %v", err)
+						content = append(content, "[图片]")
+					} else {
+						md5 := hex.EncodeToString(v.Md5)
+						bin.Name = v.ImageId
+						blobs[md5] = bin
+						content = append(content, fmt.Sprintf("<img src=\"%s%s\">", common.REMOTE_PREFIX, md5))
+					}
 				case *message.ForwardMessage:
-					handleForward(v.Nodes)
+					handleForward(level+1, v.Nodes)
 				case *message.ServiceElement:
-					log.Infof("Service: %+v", v)
 					if v.SubType != "xml" {
 						continue
 					}
@@ -761,44 +788,57 @@ func (b *Bot) convertForward(elem *message.ForwardElement) string {
 					if resNode != nil && len(resNode.InnerText()) != 0 {
 						msg := b.client.GetForwardMessage(resNode.InnerText())
 						if msg != nil {
-							handleForward(msg.Nodes)
+							handleForward(level+1, msg.Nodes)
 						}
 					} else {
 						briefNode := xmlquery.FindOne(doc, "/msg/@brief")
+						content = append(content, "<blockquote>")
 						if briefNode != nil && len(briefNode.InnerText()) != 0 {
 							summary = append(summary, fmt.Sprintf("%s:\n", briefNode.InnerText()))
+							content = append(content, fmt.Sprintf("<strong>%s:</strong><p>", briefNode.InnerText()))
 						} else {
 							summary = append(summary, "Items:\n")
+							content = append(content, "<strong>Items:</strong><p>")
 						}
 						for _, title := range xmlquery.Find(doc, "/msg/item/title") {
 							summary = append(summary, title.InnerText()+"\n")
+							content = append(content, "<p>", title.InnerText(), "</p>")
 						}
+						content = append(content, "</p></blockquote>")
 					}
 				case *message.AnimatedSticker:
 					summary = append(summary, "/"+v.Name)
+					content = append(content, "/"+v.Name)
 				case *message.MarketFaceElement:
 					summary = append(summary, v.Name)
+					content = append(content, v.Name)
 				default:
 					summary = append(summary, fmt.Sprintf("[%v]", v.Type()))
+					content = append(content, fmt.Sprintf("[%v]", v.Type()))
 				}
 			}
 			summary = append(summary, "\n")
+			content = append(content, "</p>")
+		}
+
+		if level > 0 {
+			content = append(content, "</blockquote>")
 		}
 	}
 
 	msg := b.client.GetForwardMessage(elem.ResId)
 	if msg != nil {
-		handleForward(msg.Nodes)
+		handleForward(0, msg.Nodes)
 	} else {
 		log.Info("Failed to get forward!")
 	}
 
-	text := strings.Join(summary, "")
-	if text == "" {
-		return "[转发消息]"
+	return &common.AppData{
+		Title:       fmt.Sprintf("[聊天记录 %s]", id),
+		Description: strings.Join(summary, ""),
+		Content:     strings.Join(content, ""),
+		Blobs:       blobs,
 	}
-
-	return text
 }
 
 func (b *Bot) generateEvent(id string, ts int64) *common.OctopusEvent {
