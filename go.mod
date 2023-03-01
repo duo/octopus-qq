@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/Mrs4s/MiraiGo v0.0.0-20230204044633-4b6eff7c642c
 	github.com/antchfx/xmlquery v1.3.15
-	github.com/duo/wsc v0.0.0-20230222025311-77707f7341b5
+	github.com/duo/wsc v0.0.0-20230222133338-63777e3dc7a8
 	github.com/gabriel-vasile/mimetype v1.4.1
 	github.com/mattn/go-colorable v0.1.13
 	github.com/pkg/errors v0.9.1

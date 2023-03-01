@@ -307,6 +307,14 @@ func (b *Bot) processOcotopusEvent(event *common.OctopusEvent) (*common.OctopusE
 			}
 			elems = append(elems, e)
 		}
+	case common.EventSticker:
+		blob := event.Data.(*common.BlobData)
+		e, err := b.client.UploadImage(source, bytes.NewReader(blob.Binary), 4)
+		if err != nil {
+			log.Warnf("Failed to upload image to %v: %v", source, err)
+			return nil, err
+		}
+		elems = append(elems, e)
 	case common.EventVideo:
 		blob := event.Data.(*common.BlobData)
 		e, err := b.client.UploadShortVideo(source, bytes.NewReader(blob.Binary), bytes.NewReader(smallestImg), 4)
