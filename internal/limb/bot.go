@@ -60,18 +60,20 @@ type Bot struct {
 }
 
 func (b *Bot) Login() {
+	device := &client.DeviceInfo{}
 	if !common.FileExist(deviceFile) {
-		client.GenRandomDevice()
-		if err := os.WriteFile(deviceFile, client.SystemDeviceInfo.ToJson(), 0o644); err != nil {
+		device = client.GenRandomDevice()
+		if err := os.WriteFile(deviceFile, device.ToJson(), 0o644); err != nil {
 			panic(err)
 		}
 	} else {
 		if deviceInfo, err := os.ReadFile(deviceFile); err != nil {
 			panic(err)
-		} else if err := client.SystemDeviceInfo.ReadJson(deviceInfo); err != nil {
+		} else if err := device.ReadJson(deviceInfo); err != nil {
 			panic(err)
 		}
 	}
+	b.client.UseDevice(device)
 
 	isQRCodeLogin := b.config.Limb.Account == 0 || b.config.Limb.Password == ""
 	isTokenLogin := false
@@ -300,7 +302,7 @@ func (b *Bot) processOcotopusEvent(event *common.OctopusEvent) (*common.OctopusE
 	case common.EventPhoto:
 		photos := event.Data.([]*common.BlobData)
 		for _, photo := range photos {
-			e, err := b.client.UploadImage(source, bytes.NewReader(photo.Binary), 4)
+			e, err := b.client.UploadImage(source, bytes.NewReader(photo.Binary))
 			if err != nil {
 				log.Warnf("Failed to upload image to %v: %v", source, err)
 				continue
@@ -309,7 +311,7 @@ func (b *Bot) processOcotopusEvent(event *common.OctopusEvent) (*common.OctopusE
 		}
 	case common.EventSticker:
 		blob := event.Data.(*common.BlobData)
-		e, err := b.client.UploadImage(source, bytes.NewReader(blob.Binary), 4)
+		e, err := b.client.UploadImage(source, bytes.NewReader(blob.Binary))
 		if err != nil {
 			log.Warnf("Failed to upload image to %v: %v", source, err)
 			return nil, err
@@ -317,7 +319,7 @@ func (b *Bot) processOcotopusEvent(event *common.OctopusEvent) (*common.OctopusE
 		elems = append(elems, e)
 	case common.EventVideo:
 		blob := event.Data.(*common.BlobData)
-		e, err := b.client.UploadShortVideo(source, bytes.NewReader(blob.Binary), bytes.NewReader(smallestImg), 4)
+		e, err := b.client.UploadShortVideo(source, bytes.NewReader(blob.Binary), bytes.NewReader(smallestImg))
 		if err != nil {
 			log.Warnf("Failed to upload short video to %v: %v", source, err)
 			return nil, err
@@ -717,11 +719,23 @@ func (b *Bot) processEvent(event *common.OctopusEvent, elems []message.IMessageE
 			summary = summary[1:]
 		}
 
-		event.Content = strings.Join(summary, "")
-
-		if len(photos) > 0 {
+		if len(summary) == 1 && elems[0].Type() == message.Image {
 			event.Type = common.EventPhoto
 			event.Data = photos
+
+			if v, ok := elems[0].(*message.GroupImageElement); ok {
+				if v.ImageBizType == message.CustomFaceImage || v.ImageBizType == message.StickerImage {
+					event.Type = common.EventSticker
+					event.Data = photos[0]
+				}
+			}
+		} else {
+			event.Content = strings.Join(summary, "")
+
+			if len(photos) > 0 {
+				event.Type = common.EventPhoto
+				event.Data = photos
+			}
 		}
 	}
 

@@ -1,9 +1,9 @@
 module github.com/duo/octopus-qq
 
-go 1.19
+go 1.20
 
 require (
-	github.com/Mrs4s/MiraiGo v0.0.0-20230204044633-4b6eff7c642c
+	github.com/Mrs4s/MiraiGo v0.0.0-20230223093528-5a89d8a9bff2
 	github.com/antchfx/xmlquery v1.3.15
 	github.com/duo/wsc v0.0.0-20230222133338-63777e3dc7a8
 	github.com/gabriel-vasile/mimetype v1.4.1
