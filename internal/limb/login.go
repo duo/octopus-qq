@@ -3,9 +3,11 @@ package limb
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/png"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/utils"
+	"github.com/Mrs4s/MiraiGo/warpper"
 	"github.com/mattn/go-colorable"
 	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
@@ -27,6 +30,10 @@ var (
 
 	ErrSMSRequestError = errors.New("sms request error")
 )
+
+func init() {
+	warpper.DandelionEnergy = energy
+}
 
 func (b *Bot) commonLogin() error {
 	res, err := b.client.Login()
@@ -233,4 +240,24 @@ func readIfTTY(de string) (str string) {
 	}
 	log.Warnf("Input not detected, chose %s.", de)
 	return de
+}
+
+func energy(id string, salt []byte) []byte {
+	// temporary solution
+	response, err := common.Request{
+		Method: http.MethodPost,
+		URL:    "https://captcha.go-cqhttp.org/sdk/dandelion/energy",
+		Header: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+		Body:   bytes.NewReader([]byte(fmt.Sprintf("id=%s&salt=%s", id, hex.EncodeToString(salt)))),
+	}.Bytes()
+	if err != nil {
+		log.Errorf("Failed to fetch T544: %v", err)
+		return nil
+	}
+	sign, err := hex.DecodeString(gjson.GetBytes(response, "result").String())
+	if err != nil {
+		log.Errorf("Failed to fetch T544: %v", err)
+		return nil
+	}
+	return sign
 }
