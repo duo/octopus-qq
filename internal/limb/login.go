@@ -16,7 +16,7 @@ import (
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/utils"
-	"github.com/Mrs4s/MiraiGo/warpper"
+	"github.com/Mrs4s/MiraiGo/wrapper"
 	"github.com/mattn/go-colorable"
 	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
@@ -32,7 +32,7 @@ var (
 )
 
 func init() {
-	warpper.DandelionEnergy = energy
+	wrapper.DandelionEnergy = energy
 }
 
 func (b *Bot) commonLogin() error {
@@ -242,22 +242,22 @@ func readIfTTY(de string) (str string) {
 	return de
 }
 
-func energy(id string, salt []byte) []byte {
+func energy(uin uint64, id string, salt []byte) ([]byte, error) {
 	// temporary solution
 	response, err := common.Request{
 		Method: http.MethodPost,
 		URL:    "https://captcha.go-cqhttp.org/sdk/dandelion/energy",
 		Header: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
-		Body:   bytes.NewReader([]byte(fmt.Sprintf("id=%s&salt=%s", id, hex.EncodeToString(salt)))),
+		Body:   bytes.NewReader([]byte(fmt.Sprintf("uin=%v&id=%s&salt=%s", uin, id, hex.EncodeToString(salt)))),
 	}.Bytes()
 	if err != nil {
 		log.Errorf("Failed to fetch T544: %v", err)
-		return nil
+		return nil, err
 	}
 	sign, err := hex.DecodeString(gjson.GetBytes(response, "result").String())
 	if err != nil {
 		log.Errorf("Failed to fetch T544: %v", err)
-		return nil
+		return nil, err
 	}
-	return sign
+	return sign, nil
 }

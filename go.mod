@@ -3,7 +3,7 @@ module github.com/duo/octopus-qq
 go 1.20
 
 require (
-	github.com/Mrs4s/MiraiGo v0.0.0-20230307172929-fee6c23736c1
+	github.com/Mrs4s/MiraiGo v0.0.0-20230314181550-5e7ade149fff
 	github.com/antchfx/xmlquery v1.3.15
 	github.com/duo/wsc v0.0.0-20230222133338-63777e3dc7a8
 	github.com/gabriel-vasile/mimetype v1.4.2
