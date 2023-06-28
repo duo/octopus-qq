@@ -14,6 +14,7 @@ import (
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/message"
+	"github.com/Mrs4s/MiraiGo/wrapper"
 	"github.com/antchfx/xmlquery"
 	"github.com/tidwall/gjson"
 
@@ -210,6 +211,15 @@ func (b *Bot) Stop() {
 }
 
 func NewBot(config *common.Configure, pushFunc func(*common.OctopusEvent)) *Bot {
+	if config.Limb.SignServer != "" {
+		wrapper.DandelionEnergy = func(uin uint64, id, appVersion string, salt []byte) ([]byte, error) {
+			return energy(config.Limb.SignServer, uin, id, appVersion, salt)
+		}
+		wrapper.FekitGetSign = func(seq uint64, uin, cmd, qua string, buff []byte) ([]byte, []byte, []byte, error) {
+			return sign(config.Limb.SignServer, seq, uin, cmd, qua, buff)
+		}
+	}
+
 	return &Bot{
 		config:   config,
 		client:   client.NewClientEmpty(),

@@ -13,17 +13,14 @@ import (
 	"time"
 
 	"github.com/duo/octopus-qq/internal/common"
-	"github.com/duo/octopus-qq/internal/encryption"
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/utils"
-	"github.com/Mrs4s/MiraiGo/wrapper"
 	"github.com/mattn/go-colorable"
 	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
 	"gopkg.ilharper.com/x/isatty"
 
-	_ "github.com/duo/octopus-qq/internal/encryption/t544" // side effect
 	log "github.com/sirupsen/logrus"
 )
 
@@ -32,10 +29,6 @@ var (
 
 	ErrSMSRequestError = errors.New("sms request error")
 )
-
-func init() {
-	wrapper.DandelionEnergy = energy
-}
 
 func (b *Bot) commonLogin() error {
 	res, err := b.client.Login()
@@ -114,9 +107,6 @@ func (b *Bot) loginResponseProcessor(res *client.LoginResponse) error {
 				res, err = b.client.SubmitTicket(ticket)
 				continue
 			}
-			b.client.Disconnect()
-			b.client.Release()
-			b.client = client.NewClientEmpty()
 			return b.qrcodeLogin()
 		case client.NeedCaptcha:
 			log.Warnf("Cpatcha verify required: ")
@@ -244,30 +234,50 @@ func readIfTTY(de string) (str string) {
 	return de
 }
 
-func energy(uin uint64, id string, appVersion string, salt []byte) ([]byte, error) {
-	if localSigner, ok := encryption.T544Signer[appVersion]; ok {
-		log.Debugf("use local T544Signer v%s", appVersion)
-		result := localSigner(time.Now().UnixMicro(), salt)
-		log.Debugf("t544 sign result: %x", result)
-		return result, nil
+func energy(signServer string, uin uint64, id string, appVersion string, salt []byte) ([]byte, error) {
+	if !strings.HasSuffix(signServer, "/") {
+		signServer += "/"
 	}
-	log.Debugf("fallback to remote T544Signer v%s", appVersion)
-	signServer := "https://captcha.go-cqhttp.org/sdk/dandelion/energy"
+
 	response, err := common.Request{
-		Method: http.MethodPost,
-		URL:    signServer,
-		Header: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
-		Body:   bytes.NewReader([]byte(fmt.Sprintf("uin=%v&id=%s&salt=%s&version=%s", uin, id, hex.EncodeToString(salt), appVersion))),
+		Method: http.MethodGet,
+		URL:    signServer + "custom_energy" + fmt.Sprintf("?data=%v&salt=%v", id, hex.EncodeToString(salt)),
 	}.Bytes()
 	if err != nil {
 		log.Errorf("Failed to fetch T544: %v", err)
 		return nil, err
 	}
-	sign, err := hex.DecodeString(gjson.GetBytes(response, "result").String())
-	if err != nil || len(sign) == 0 {
+
+	data, err := hex.DecodeString(gjson.GetBytes(response, "data").String())
+	if err != nil {
 		log.Errorf("Failed to fetch T544: %v", err)
 		return nil, err
 	}
-	log.Debugf("t544 sign result: %x", sign)
-	return sign, nil
+	if len(data) == 0 {
+		return nil, errors.New("data is empty")
+	}
+
+	return data, nil
+}
+
+func sign(signServer string, seq uint64, uin string, cmd string, qua string, buff []byte) (sign []byte, extra []byte, token []byte, err error) {
+	if !strings.HasSuffix(signServer, "/") {
+		signServer += "/"
+	}
+
+	response, err := common.Request{
+		Method: http.MethodPost,
+		URL:    signServer + "sign",
+		Header: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+		Body:   bytes.NewReader([]byte(fmt.Sprintf("uin=%v&qua=%s&cmd=%s&seq=%v&buffer=%v", uin, qua, cmd, seq, hex.EncodeToString(buff)))),
+	}.Bytes()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	sign, _ = hex.DecodeString(gjson.GetBytes(response, "data.sign").String())
+	extra, _ = hex.DecodeString(gjson.GetBytes(response, "data.extra").String())
+	token, _ = hex.DecodeString(gjson.GetBytes(response, "data.token").String())
+
+	return sign, extra, token, nil
 }

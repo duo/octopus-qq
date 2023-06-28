@@ -16,9 +16,10 @@ const (
 
 type Configure struct {
 	Limb struct {
-		Account  int64  `yaml:"account"`
-		Password string `yaml:"password"`
-		HookSelf bool   `yaml:"hook_self"`
+		Account    int64  `yaml:"account"`
+		Password   string `yaml:"password"`
+		HookSelf   bool   `yaml:"hook_self"`
+		SignServer string `yaml:"sign_server"`
 	} `yaml:"limb"`
 
 	Service struct {

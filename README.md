@@ -15,6 +15,7 @@ docker run -d --name=octopus-qq --restart=always -v octopus-qq:/data lxduo/octop
 limb:
   account: # Optional, QQ account (leave empty for QR code login)
   password: # Optional, QQ password (leave empty for QR code login)
+  sign_server: # Optional, sign server (https://github.com/fuqiuluo/unidbg-fetch-qsign)
 
 service:
   addr: ws://10.10.10.10:11111 # Required, ocotpus address

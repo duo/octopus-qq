@@ -1,6 +1,7 @@
 limb:
   account: # Optional, qq account (leave empty for QR code login)
   password: # Optional, qq password (leave empty for QR code login)
+  sign_server: # Optional, sign server (https://github.com/fuqiuluo/unidbg-fetch-qsign)
 
 service:
   addr: ws://10.10.10.10:11111 # Required, ocotpus address
