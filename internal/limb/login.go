@@ -3,11 +3,9 @@ package limb
 import (
 	"bufio"
 	"bytes"
-	"encoding/hex"
 	"fmt"
 	"image"
 	"image/png"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -95,19 +93,12 @@ func (b *Bot) loginResponseProcessor(res *client.LoginResponse) error {
 		switch res.Error {
 		case client.SliderNeededError:
 			log.Warnf("Slidebar verify required: ")
-			log.Warnf("1. Use browser")
-			log.Warnf("2. Use mobile phone scan code")
-			log.Warn("Input(1 - 2): ")
-			text = readIfTTY("1")
-			if strings.Contains(text, "1") {
-				ticket := getTicket(res.VerifyUrl)
-				if ticket == "" {
-					os.Exit(0)
-				}
-				res, err = b.client.SubmitTicket(ticket)
-				continue
+			ticket := getTicket(res.VerifyUrl)
+			if ticket == "" {
+				os.Exit(0)
 			}
-			return b.qrcodeLogin()
+			res, err = b.client.SubmitTicket(ticket)
+			continue
 		case client.NeedCaptcha:
 			log.Warnf("Cpatcha verify required: ")
 			_ = os.WriteFile("captcha.jpg", res.CaptchaImage, 0o644)
@@ -149,33 +140,49 @@ func (b *Bot) loginResponseProcessor(res *client.LoginResponse) error {
 			os.Exit(0)
 		case client.OtherLoginError, client.UnknownLoginError, client.TooManySMSRequestError:
 			msg := res.ErrorMessage
-			log.Warnf("Login failed: %v", msg)
+			log.Warnf("Login failed: %v, code: %v", msg, res.Code)
+			switch res.Code {
+			case 235:
+				log.Warnf("Device has been banned, please delete device.json and try again")
+			case 237:
+				log.Warnf("Login attempts are too frequent, wait for a while before trying again")
+			case 45:
+				log.Warnf("Account is restricted from logging in, please configure SignServer and try again")
+			}
 			os.Exit(0)
 		}
 	}
 }
 
 func getTicket(u string) (str string) {
+	log.Warnf("Select slidebar ticket submit method:")
+	log.Warnf("1. Auto")
+	log.Warnf("2. Maunal")
+	log.Warn("Input(1 - 2): ")
+	text := readLine()
+
 	id := utils.RandomString(8)
-	log.Warnf("Verify ticket %v", strings.ReplaceAll(u, "https://ssl.captcha.qq.com/template/wireless_mqq_captcha.html?", fmt.Sprintf("https://captcha.go-cqhttp.org/captcha?id=%v&", id)))
-	manual := make(chan string, 1)
-	go func() {
-		manual <- readLine()
-	}()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for count := 120; count > 0; count-- {
-		select {
-		case <-ticker.C:
-			str = fetchCaptcha(id)
-			if str != "" {
-				return
-			}
-		case str = <-manual:
-			return
-		}
+	auto := !strings.Contains(text, "2")
+	if auto {
+		u = strings.ReplaceAll(u, "https://ssl.captcha.qq.com/template/wireless_mqq_captcha.html?", fmt.Sprintf("https://captcha.go-cqhttp.org/captcha?id=%v&", id))
 	}
+	log.Warnf("Verify ticket -> %v", u)
+
+	if !auto {
+		log.Warn("Input ticket: (submit on enter)")
+		return readLine()
+	}
+
+	for count := 120; count > 0; count-- {
+		str := fetchCaptcha(id)
+		if str != "" {
+			return str
+		}
+		time.Sleep(time.Second)
+	}
+
 	log.Warnf("Verify ticket expired")
+
 	return ""
 }
 
@@ -232,52 +239,4 @@ func readIfTTY(de string) (str string) {
 	}
 	log.Warnf("Input not detected, chose %s.", de)
 	return de
-}
-
-func energy(signServer string, uin uint64, id string, appVersion string, salt []byte) ([]byte, error) {
-	if !strings.HasSuffix(signServer, "/") {
-		signServer += "/"
-	}
-
-	response, err := common.Request{
-		Method: http.MethodGet,
-		URL:    signServer + "custom_energy" + fmt.Sprintf("?data=%v&salt=%v", id, hex.EncodeToString(salt)),
-	}.Bytes()
-	if err != nil {
-		log.Errorf("Failed to fetch T544: %v", err)
-		return nil, err
-	}
-
-	data, err := hex.DecodeString(gjson.GetBytes(response, "data").String())
-	if err != nil {
-		log.Errorf("Failed to fetch T544: %v", err)
-		return nil, err
-	}
-	if len(data) == 0 {
-		return nil, errors.New("data is empty")
-	}
-
-	return data, nil
-}
-
-func sign(signServer string, seq uint64, uin string, cmd string, qua string, buff []byte) (sign []byte, extra []byte, token []byte, err error) {
-	if !strings.HasSuffix(signServer, "/") {
-		signServer += "/"
-	}
-
-	response, err := common.Request{
-		Method: http.MethodPost,
-		URL:    signServer + "sign",
-		Header: map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
-		Body:   bytes.NewReader([]byte(fmt.Sprintf("uin=%v&qua=%s&cmd=%s&seq=%v&buffer=%v", uin, qua, cmd, seq, hex.EncodeToString(buff)))),
-	}.Bytes()
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	sign, _ = hex.DecodeString(gjson.GetBytes(response, "data.sign").String())
-	extra, _ = hex.DecodeString(gjson.GetBytes(response, "data.extra").String())
-	token, _ = hex.DecodeString(gjson.GetBytes(response, "data.token").String())
-
-	return sign, extra, token, nil
 }

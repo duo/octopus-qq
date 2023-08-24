@@ -5,7 +5,9 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,8 +16,11 @@ import (
 
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/message"
+	"github.com/Mrs4s/MiraiGo/utils"
 	"github.com/Mrs4s/MiraiGo/wrapper"
 	"github.com/antchfx/xmlquery"
+	"github.com/hashicorp/go-version"
+	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
 
 	log "github.com/sirupsen/logrus"
@@ -57,7 +62,8 @@ type Bot struct {
 
 	pushFunc func(*common.OctopusEvent)
 
-	stopSync chan struct{}
+	stopSync         chan struct{}
+	stopTokenRefresh chan struct{}
 }
 
 func (b *Bot) Login() {
@@ -74,7 +80,19 @@ func (b *Bot) Login() {
 			panic(err)
 		}
 	}
+	setClientProtocol(device, b.config.Limb.Protocol)
+	log.Infof("QQ protocol: %s", device.Protocol.Version())
 	b.client.UseDevice(device)
+
+	if b.config.Limb.Sign.Server != "" {
+		log.Infof("Using server %s for packet signature", b.config.Limb.Sign.Server)
+
+		wrapper.DandelionEnergy = b.energy
+		wrapper.FekitGetSign = b.sign
+
+		b.signRegister(b.config.Limb.Account, device.AndroidId, device.Guid, device.QImei36, b.config.Limb.Sign.Key)
+		go b.startRefreshSignToken()
+	}
 
 	isQRCodeLogin := b.config.Limb.Account == 0 || b.config.Limb.Password == ""
 	isTokenLogin := false
@@ -206,25 +224,22 @@ func (b *Bot) Stop() {
 	default:
 	}
 
+	select {
+	case b.stopTokenRefresh <- struct{}{}:
+	default:
+	}
+
 	b.client.Disconnect()
 	b.client.Release()
 }
 
 func NewBot(config *common.Configure, pushFunc func(*common.OctopusEvent)) *Bot {
-	if config.Limb.SignServer != "" {
-		wrapper.DandelionEnergy = func(uin uint64, id, appVersion string, salt []byte) ([]byte, error) {
-			return energy(config.Limb.SignServer, uin, id, appVersion, salt)
-		}
-		wrapper.FekitGetSign = func(seq uint64, uin, cmd, qua string, buff []byte) ([]byte, []byte, []byte, error) {
-			return sign(config.Limb.SignServer, seq, uin, cmd, qua, buff)
-		}
-	}
-
 	return &Bot{
-		config:   config,
-		client:   client.NewClientEmpty(),
-		pushFunc: pushFunc,
-		stopSync: make(chan struct{}),
+		config:           config,
+		client:           client.NewClientEmpty(),
+		pushFunc:         pushFunc,
+		stopSync:         make(chan struct{}),
+		stopTokenRefresh: make(chan struct{}),
 	}
 }
 
@@ -885,5 +900,271 @@ func (b *Bot) getVendor() common.Vendor {
 	return common.Vendor{
 		Type: "qq",
 		UID:  common.Itoa(b.client.Uin),
+	}
+}
+
+func (b *Bot) energy(uin uint64, id string, appVersion string, salt []byte) ([]byte, error) {
+	signServer := b.config.Limb.Sign.Server
+	signServerBearer := b.config.Limb.Sign.Bearer
+	device := b.client.Device()
+
+	headers := make(map[string]string)
+	if signServerBearer != "" {
+		headers["Authorization"] = "Bearer " + signServerBearer
+	}
+
+	req := common.Request{
+		Method: http.MethodGet,
+		Header: headers,
+		URL:    signServer + "custom_energy" + fmt.Sprintf("?data=%v&salt=%v", id, hex.EncodeToString(salt)),
+	}
+
+	if !b.config.Limb.Sign.IsBelow110 {
+		req.URL = signServer + "custom_energy" + fmt.Sprintf("?data=%v&salt=%v&uin=%v&android_id=%v&guid=%v",
+			id, hex.EncodeToString(salt), uin, utils.B2S(device.AndroidId), hex.EncodeToString(device.Guid))
+	}
+
+	response, err := req.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := hex.DecodeString(gjson.GetBytes(response, "data").String())
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, errors.New("data is empty")
+	}
+
+	return data, nil
+}
+
+func (b *Bot) signSubmit(uin string, cmd string, callbackID int64, buffer []byte, t string) {
+	signServer := b.config.Limb.Sign.Server
+
+	buffStr := hex.EncodeToString(buffer)
+	_, err := common.Request{
+		Method: http.MethodGet,
+		URL: signServer + "submit" + fmt.Sprintf("?uin=%v&cmd=%v&callback_id=%v&buffer=%v",
+			uin, cmd, callbackID, buffStr),
+	}.Bytes()
+	if err != nil {
+		log.Warnf("Failed to submit callback for %s, err: %v", uin, err)
+	}
+}
+
+func (b *Bot) signCallback(uin string, results []gjson.Result, t string) {
+	for _, result := range results {
+		cmd := result.Get("cmd").String()
+		callbackID := result.Get("callbackId").Int()
+		body, _ := hex.DecodeString(result.Get("body").String())
+		ret, err := b.client.SendSsoPacket(cmd, body)
+		if err != nil || len(ret) == 0 {
+			log.Warnf("Callback error for %s, err: %v", uin, err)
+			continue
+		}
+		b.signSubmit(uin, cmd, callbackID, ret, t)
+	}
+}
+
+func (b *Bot) signRequset(seq uint64, uin string, cmd string, qua string, buff []byte) (sign []byte, extra []byte, token []byte, err error) {
+	signServer := b.config.Limb.Sign.Server
+	signServerBearer := b.config.Limb.Sign.Bearer
+	device := b.client.Device()
+
+	headers := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	if signServerBearer != "" {
+		headers["Authorization"] = "Bearer " + signServerBearer
+	}
+
+	response, err := common.Request{
+		Method: http.MethodPost,
+		URL:    signServer + "sign",
+		Header: headers,
+		Body: bytes.NewReader([]byte(fmt.Sprintf("uin=%v&qua=%s&cmd=%s&seq=%v&buffer=%v&android_id=%v&guid=%v",
+			uin, qua, cmd, seq, hex.EncodeToString(buff), utils.B2S(device.AndroidId), hex.EncodeToString(device.Guid)))),
+	}.Bytes()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	sign, _ = hex.DecodeString(gjson.GetBytes(response, "data.sign").String())
+	extra, _ = hex.DecodeString(gjson.GetBytes(response, "data.extra").String())
+	token, _ = hex.DecodeString(gjson.GetBytes(response, "data.token").String())
+
+	if !b.config.Limb.Sign.IsBelow110 {
+		go b.signCallback(uin, gjson.GetBytes(response, "data.requestCallback").Array(), "sign")
+	}
+
+	return sign, extra, token, nil
+}
+
+func (b *Bot) signRegister(uin int64, androidID, guid []byte, qimei36, key string) {
+	if b.config.Limb.Sign.IsBelow110 {
+		return
+	}
+
+	signServer := b.config.Limb.Sign.Server
+
+	resp, err := common.Request{
+		Method: http.MethodGet,
+		URL: signServer + "register" + fmt.Sprintf("?uin=%v&android_id=%v&guid=%v&qimei36=%v&key=%s",
+			uin, utils.B2S(androidID), hex.EncodeToString(guid), qimei36, key),
+	}.Bytes()
+	if err != nil {
+		log.Warnf("Failed to register sign instance for %d, err: %d", uin, err)
+		return
+	}
+
+	msg := gjson.GetBytes(resp, "msg")
+	if gjson.GetBytes(resp, "code").Int() != 0 {
+		log.Warnf("Failed to register sign instance for %d, msg: %v", uin, msg)
+		return
+	}
+
+	log.Infof("Register sign instance for %d, msg: %v", uin, msg)
+}
+
+func (b *Bot) signRefreshToken(uin string) error {
+	signServer := b.config.Limb.Sign.Server
+
+	resp, err := common.Request{
+		Method: http.MethodGet,
+		URL:    signServer + "request_token" + fmt.Sprintf("?uin=%v", uin),
+	}.Bytes()
+	if err != nil {
+		return err
+	}
+
+	msg := gjson.GetBytes(resp, "msg")
+	if gjson.GetBytes(resp, "code").Int() != 0 {
+		return errors.New(msg.String())
+	}
+
+	go b.signCallback(uin, gjson.GetBytes(resp, "data").Array(), "request token")
+
+	return nil
+}
+
+func (b *Bot) sign(seq uint64, uin string, cmd string, qua string, buff []byte) (sign []byte, extra []byte, token []byte, err error) {
+	device := b.client.Device()
+
+	i := 0
+	for {
+		sign, extra, token, err = b.signRequset(seq, uin, cmd, qua, buff)
+		if err != nil {
+			log.Warnf("Failed to get sign for %s, err: %v", uin, err)
+		}
+		if i > 0 {
+			break
+		}
+
+		i++
+
+		if !b.config.Limb.Sign.IsBelow110 && err == nil && len(sign) == 0 {
+			log.Warnf("Get empty sign for %s, attempting re-register", uin)
+			err := b.signServerDestroy(uin)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+
+			intUin, _ := strconv.ParseInt(uin, 10, 64)
+			b.signRegister(intUin, device.AndroidId, device.Guid, device.QImei36, b.config.Limb.Sign.Key)
+
+			continue
+		}
+		if !b.config.Limb.Sign.IsBelow110 && len(token) == 0 {
+			if err := b.signRefreshToken(uin); err != nil {
+				log.Warnf("Failed to refresh token for %s, err: %v", uin, err)
+			} else {
+				log.Warnf("Refresh token success for %s", uin)
+			}
+			continue
+		}
+		break
+	}
+
+	return sign, extra, token, err
+}
+
+func (b *Bot) signServerDestroy(uin string) error {
+	signServer := b.config.Limb.Sign.Server
+
+	signVersion, err := b.signVersion()
+	if err != nil {
+		return err
+	}
+
+	base, _ := version.NewVersion("1.1.6")
+	ver, _ := version.NewVersion(signVersion)
+	if ver.LessThan(base) {
+		return errors.New("unable to call destroy method")
+	}
+
+	resp, err := common.Request{
+		Method: http.MethodGet,
+		URL:    signServer + "destroy" + fmt.Sprintf("?uin=%v&key=%v", uin, b.config.Limb.Sign.Key),
+	}.Bytes()
+	if err != nil || gjson.GetBytes(resp, "code").Int() != 0 {
+		return err
+	}
+
+	log.Infof("Destroy sign instance for %s", uin)
+
+	return nil
+}
+
+func (b *Bot) signVersion() (version string, err error) {
+	signServer := b.config.Limb.Sign.Server
+
+	resp, err := common.Request{
+		Method: http.MethodGet,
+		URL:    signServer,
+	}.Bytes()
+
+	if err != nil {
+		return "", err
+	}
+
+	if gjson.GetBytes(resp, "code").Int() == 0 {
+		return gjson.GetBytes(resp, "data.version").String(), nil
+	}
+
+	return "", errors.New("empty version")
+}
+
+func (b *Bot) startRefreshSignToken() {
+	clock := time.NewTicker(b.config.Limb.Sign.RefreshInterval)
+	defer clock.Stop()
+
+	for {
+		select {
+		case <-clock.C:
+			if err := b.signRefreshToken(strconv.FormatInt(b.config.Limb.Account, 10)); err != nil {
+				log.Warnf("Failed to refresh token: %v uin: %d", err, b.config.Limb.Account)
+			}
+		case <-b.stopTokenRefresh:
+			return
+		}
+	}
+}
+
+func setClientProtocol(device *client.DeviceInfo, protocol int) {
+	switch protocol {
+	case 1:
+		device.Protocol = client.AndroidPhone
+	case 2:
+		device.Protocol = client.AndroidWatch
+	case 3:
+		device.Protocol = client.MacOS
+	case 4:
+		device.Protocol = client.QiDian
+	case 5:
+		device.Protocol = client.IPad
+	case 6:
+		device.Protocol = client.AndroidPad
+	default:
+		device.Protocol = client.AndroidPad
 	}
 }

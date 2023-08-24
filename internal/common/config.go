@@ -2,13 +2,15 @@ package common
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	defaultPingInterval = 30 * time.Second
+	defaultRefreshInterval = 30 * time.Minute
+	defaultPingInterval    = 30 * time.Second
 	//defaultSendTimeout  = 3 * time.Minute
 	defaultSyncDelay    = 1 * time.Minute
 	defaultSyncInterval = 6 * time.Hour
@@ -16,10 +18,18 @@ const (
 
 type Configure struct {
 	Limb struct {
-		Account    int64  `yaml:"account"`
-		Password   string `yaml:"password"`
-		HookSelf   bool   `yaml:"hook_self"`
-		SignServer string `yaml:"sign_server"`
+		Account  int64  `yaml:"account"`
+		Password string `yaml:"password"`
+		Protocol int    `yaml:"protocol"`
+		HookSelf bool   `yaml:"hook_self"`
+
+		Sign struct {
+			Server          string        `yaml:"server"`
+			Bearer          string        `yaml:"bearer"`
+			Key             string        `yaml:"key"`
+			IsBelow110      bool          `yaml:"is_below_110"`
+			RefreshInterval time.Duration `yaml:"refresh_interval"`
+		} `yaml:"sign"`
 	} `yaml:"limb"`
 
 	Service struct {
@@ -43,12 +53,17 @@ func LoadConfig(path string) (*Configure, error) {
 	}
 
 	config := &Configure{}
+	config.Limb.Sign.RefreshInterval = defaultRefreshInterval
 	config.Service.PingInterval = defaultPingInterval
 	//config.Service.SendTiemout = defaultSendTimeout
 	config.Service.SyncDelay = defaultSyncDelay
 	config.Service.SyncInterval = defaultSyncInterval
 	if err := yaml.Unmarshal(file, &config); err != nil {
 		return nil, err
+	}
+
+	if !strings.HasSuffix(config.Limb.Sign.Server, "/") {
+		config.Limb.Sign.Server += "/"
 	}
 
 	return config, nil
